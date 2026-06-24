@@ -1,0 +1,15 @@
+.DS_Store
+.env
+.env.local
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+jobrun_sentinel*.db
+htmlcov/
+dist/
+node_modules/
+coverage/
+*.log

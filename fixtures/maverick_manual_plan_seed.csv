@@ -1,0 +1,5 @@
+Step,Status,Process ID,Actual Execution Time (Minutes),Estimated Run Time,Start Timestamp,End Timestamp,Owner/Who,Comment,Volume
+APJ Direct CalculatePVT,Running,PROC-APJ-DIRECT-8841,780,350,2026-06-19 22:20,,ICM Support,Actual exceeds estimate; changed UDQ hash,1425000
+Run Revert,Running,PROC-REVERT-4001,392,67,2026-06-20 04:48,,ICM Support,Run Revert exceeded p90 baseline by 5.8x,90500
+AMER/LATAM Collect Credits,Running,PROC-COLLECT-6621,182,145,2026-06-20 08:18,,ICM Support,Collect job is above estimate; watch volume drift,485000
+
