@@ -1,44 +1,79 @@
+name: jobrun-sentinel
+
 services:
   db:
-    image: postgres:16
+    image: postgres:16-alpine
+    restart: unless-stopped
     environment:
-      POSTGRES_USER: sentinel
-      POSTGRES_PASSWORD: sentinel
-      POSTGRES_DB: jobrun_sentinel
+      POSTGRES_USER: ${POSTGRES_USER:-sentinel}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-sentinel}
+      POSTGRES_DB: ${POSTGRES_DB:-jobrun_sentinel}
     ports:
-      - "5432:5432"
+      - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U sentinel -d jobrun_sentinel"]
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 5s
       timeout: 5s
-      retries: 10
+      retries: 20
+    security_opt:
+      - no-new-privileges:true
 
   api:
     build:
       context: ./backend
+    image: ${JOBRUN_API_IMAGE:-jobrun-sentinel-api:local}
+    restart: unless-stopped
+    init: true
     environment:
-      DATABASE_URL: postgresql+psycopg2://sentinel:sentinel@db:5432/jobrun_sentinel
-      AUTO_SEED: "true"
-      DEFAULT_ALERT_DASHBOARD_URL: http://localhost:5173/dashboard
-      ALLOW_RAW_QUERY_TEXT_STORAGE: "false"
+      ENVIRONMENT: ${ENVIRONMENT:-container}
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg2://sentinel:sentinel@db:5432/jobrun_sentinel}
+      AUTO_SEED: ${AUTO_SEED:-true}
+      AUTO_SEED_SCALE: ${AUTO_SEED_SCALE:-false}
+      DEFAULT_ALERT_DASHBOARD_URL: ${DEFAULT_ALERT_DASHBOARD_URL:-http://localhost:5173/dashboard}
+      ALLOW_RAW_QUERY_TEXT_STORAGE: ${ALLOW_RAW_QUERY_TEXT_STORAGE:-false}
+      JOBRUN_CONNECTOR_MODE: ${JOBRUN_CONNECTOR_MODE:-mock}
+      JOBRUN_ALLOW_ORACLE_CONNECTOR: ${JOBRUN_ALLOW_ORACLE_CONNECTOR:-false}
+      JOBRUN_ALLOW_RAW_QUERY_TEXT: ${JOBRUN_ALLOW_RAW_QUERY_TEXT:-false}
+      JOBRUN_SCHEDULER_ENABLED: ${JOBRUN_SCHEDULER_ENABLED:-false}
+      JOBRUN_DB_WAIT_SECONDS: ${JOBRUN_DB_WAIT_SECONDS:-90}
+      JOBRUN_RUN_MIGRATIONS: ${JOBRUN_RUN_MIGRATIONS:-false}
+      PORT: 8000
     ports:
-      - "8000:8000"
+      - "${API_PORT:-8000}:8000"
     depends_on:
       db:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).read()\""]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 5
+    security_opt:
+      - no-new-privileges:true
 
   frontend:
     build:
       context: ./frontend
+    image: ${JOBRUN_FRONTEND_IMAGE:-jobrun-sentinel-frontend:local}
+    restart: unless-stopped
     environment:
-      VITE_API_BASE_URL: http://localhost:8000/api
+      API_UPSTREAM: ${API_UPSTREAM:-http://api:8000}
     ports:
-      - "5173:5173"
+      - "${FRONTEND_PORT:-5173}:8080"
     depends_on:
-      - api
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/health >/dev/null"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 5
+    security_opt:
+      - no-new-privileges:true
 
 volumes:
   postgres-data:
-

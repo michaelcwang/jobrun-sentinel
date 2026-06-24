@@ -15,6 +15,7 @@ AI logic, when added, should operate on sanitized metrics and metadata only. It 
 Run the full stack with Docker Compose:
 
 ```bash
+cp .env.example .env
 docker compose up --build
 ```
 
@@ -23,6 +24,8 @@ Then open:
 - Frontend: http://localhost:5173/dashboard
 - API docs: http://localhost:8000/docs
 - Health: http://localhost:8000/health
+
+The production-style frontend container serves static assets through Nginx and proxies `/api` to the backend. See `docs/container_deployment.md` for registry, Compose, and Kubernetes deployment notes.
 
 Local development without Docker:
 
@@ -65,6 +68,7 @@ The app defaults to SQLite for local development and uses PostgreSQL in Docker C
 Phase 2 docs:
 
 - `docs/oracle_connector.md`
+- `docs/container_deployment.md`
 - `docs/review_bundle.md`
 - `docs/query_template_registry.md`
 - `docs/scheduler.md`
