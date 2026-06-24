@@ -5,6 +5,10 @@ on:
     branches: ["main"]
   pull_request:
 
+concurrency:
+  group: jobrun-sentinel-ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   backend:
     name: Backend pytest
@@ -12,6 +16,7 @@ jobs:
     defaults:
       run:
         working-directory: backend
+        shell: bash
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -22,9 +27,35 @@ jobs:
           cache: pip
           cache-dependency-path: backend/requirements.txt
       - name: Install backend dependencies
-        run: python -m pip install --upgrade pip && pip install -r requirements.txt
+        run: |
+          mkdir -p ../ci-artifacts
+          set -o pipefail
+          python -m pip install --upgrade pip 2>&1 | tee ../ci-artifacts/backend-install.log
+          pip install -r requirements.txt 2>&1 | tee -a ../ci-artifacts/backend-install.log
       - name: Run backend tests
-        run: python -m pytest
+        run: |
+          mkdir -p ../ci-artifacts
+          set -o pipefail
+          python -m pytest 2>&1 | tee ../ci-artifacts/backend-pytest.log
+      - name: Build review bundle
+        if: always()
+        continue-on-error: true
+        run: |
+          mkdir -p ../ci-artifacts
+          python -m app.cli review-bundle --skip-screenshots --skip-commands --output-dir backend/review_bundles 2>&1 | tee ../ci-artifacts/review-bundle.log
+      - name: Upload backend logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-ci-logs
+          path: ci-artifacts/
+      - name: Upload review bundle
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: review-bundle
+          path: backend/review_bundles/*.zip
+          if-no-files-found: warn
 
   frontend:
     name: Frontend build and tests
@@ -32,6 +63,7 @@ jobs:
     defaults:
       run:
         working-directory: frontend
+        shell: bash
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -42,17 +74,44 @@ jobs:
           cache: npm
           cache-dependency-path: frontend/package-lock.json
       - name: Install frontend dependencies
-        run: npm ci
+        run: |
+          mkdir -p ../ci-artifacts
+          set -o pipefail
+          npm ci 2>&1 | tee ../ci-artifacts/frontend-npm-ci.log
       - name: Build frontend
-        run: npm run build
+        run: |
+          mkdir -p ../ci-artifacts
+          set -o pipefail
+          npm run build 2>&1 | tee ../ci-artifacts/frontend-build.log
       - name: Run frontend tests
-        run: npm test
+        run: |
+          mkdir -p ../ci-artifacts
+          set -o pipefail
+          npm test 2>&1 | tee ../ci-artifacts/frontend-test.log
+      - name: Upload frontend logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-ci-logs
+          path: ci-artifacts/
 
   docker-compose-build:
     name: Docker Compose build
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
     steps:
       - name: Checkout
         uses: actions/checkout@v4
       - name: Build Docker Compose services
-        run: docker compose build
+        run: |
+          mkdir -p ci-artifacts
+          set -o pipefail
+          docker compose build 2>&1 | tee ci-artifacts/docker-compose-build.log
+      - name: Upload Docker logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-compose-ci-logs
+          path: ci-artifacts/

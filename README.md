@@ -65,6 +65,7 @@ The app defaults to SQLite for local development and uses PostgreSQL in Docker C
 Phase 2 docs:
 
 - `docs/oracle_connector.md`
+- `docs/review_bundle.md`
 - `docs/query_template_registry.md`
 - `docs/scheduler.md`
 - `PHASE2_SUMMARY.md`

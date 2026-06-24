@@ -57,3 +57,16 @@ Production topology should be built from read-only connector templates and telem
 - WLS/OCI/Grafana/Prometheus: middleware host, GC, RJVM, CPU/load, and service metrics.
 
 The app remains non-destructive. It may inspect and correlate; it must not control jobs, alter DB objects, execute PL/SQL, or remediate customer pods.
+
+## Ingestion Path
+
+`TopologyIngestionService` is the connector-driven path for runtime placement:
+
+1. Select the active topology query template for the run identity.
+2. Execute it through `QueryTemplateExecutionService`.
+3. Record `QueryExecutionLog` provenance.
+4. Map GV$SESSION/GV$INSTANCE-style rows into `DbSessionSnapshot`.
+5. Upsert `RuntimeNode` records for DB instance, DB host, and inferred app server.
+6. Upsert `JobRunNodeBinding` records with confirmed/inferred confidence.
+
+`RuntimeTopologyService` reads ingested session snapshots first. If none exist, it asks the ingestion service to collect rows. Seed rows are used only in local mock/demo mode so a production configuration does not silently invent topology evidence.

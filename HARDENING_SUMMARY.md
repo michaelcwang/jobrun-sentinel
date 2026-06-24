@@ -1,48 +1,67 @@
 # Hardening Summary
 
-## Summary
+## Current Status
 
-This pass focused on production reliability and verification for the existing JobRun Sentinel phases.
+This pass finishes the production-hardening work needed to make the existing phases reliable and CI-verifiable.
 
-Implemented:
+Latest inspected GitHub Actions run before this patch:
 
-- GitHub Actions CI for backend install/tests, frontend `npm ci`/build/tests, and Docker Compose build.
-- `python -m app.cli review-bundle` command that captures redacted API snapshots, command output, optional Playwright screenshots, and a zipped review package.
-- Connector-driven topology ingestion that runs stock topology templates through the existing query-template execution/audit path before falling back to local seed topology.
-- High-fidelity mock Oracle coverage for active session lookup, missing ASH privileges, ORA-style errors, and sanitized errors.
-- Production safety tests for read-only templates, DBMS remediation blocking, raw UDQ SQL default behavior, and secret leakage.
-- Service/component splitting for topology heat scoring and dashboard runtime map/heatmap components.
-- Docker context ignores to keep local DBs, virtualenvs, node modules, and build output out of image builds.
+- Run: `28104211291`
+- Commit: `d90918a`
+- Result: failed
+- Backend pytest: passed
+- Frontend job: failed during dependency install
+- Docker Compose build: failed
+- Log download was blocked by GitHub API permissions, but job metadata was available.
+
+Fixes in this patch:
+
+- Normalized `frontend/package-lock.json` away from an internal Oracle npm registry so GitHub-hosted runners can run `npm ci`.
+- Updated `frontend/Dockerfile` to use `npm ci --no-audit --no-fund`.
+- Improved GitHub Actions with concurrency, pip/npm cache, pipefail command logging, failure artifact uploads, Docker build logs, and a CI-safe review-bundle artifact.
+- Completed the review-bundle zip structure: metadata, test results, API snapshots, screenshots, page inventory, diagnostic review, design review notes, and README.
+- Added `TopologyIngestionService` so topology collection runs through query-template execution, creates `QueryExecutionLog` provenance, and maps rows into `DbSessionSnapshot`, `RuntimeNode`, and `JobRunNodeBinding`.
+- Updated `RuntimeTopologyService` to prefer ingested snapshots, invoke topology ingestion when needed, and use seed fallback only in mock/demo/local mode.
+- Kept heat scoring in the dedicated `TopologyHeatScoreScorer` module and added isolated tests.
 
 ## Commands Run
+
+Backend:
 
 ```bash
 cd backend
 .venv/bin/python -m pytest
 ```
 
-Result: `61 passed, 2 warnings`.
+Result: `68 passed, 2 warnings`.
+
+Frontend:
 
 ```bash
 cd frontend
+npm ci --no-audit --no-fund
 npm run build
 npm test
 ```
 
-Result: build passed, `8 passed`.
+Result: install passed, build passed, `8 passed`.
+
+Review bundle:
 
 ```bash
 cd backend
-.venv/bin/python -m app.cli review-bundle --skip-commands --skip-screenshots --output-dir backend/review_bundles
+.venv/bin/python -m app.cli review-bundle --skip-screenshots --skip-commands --output-dir backend/review_bundles
 ```
 
-Result: zip bundle created with 8 API snapshot artifacts.
+Result: zip bundle created with 21 artifacts, including required top-level files and directories.
+
+Docker:
 
 ```bash
 docker compose build
 ```
 
-Result: attempted locally, but Docker is not installed in this environment (`docker: command not found`). The CI workflow includes this as a required job.
+Result: not locally executable in this environment because Docker is not installed. The GitHub Actions workflow runs Docker Compose build as a required job.
 
 ## CI Local Equivalent
 
@@ -72,28 +91,39 @@ Full command:
 
 ```bash
 cd backend
-.venv/bin/python -m app.cli review-bundle
+python -m app.cli review-bundle
 ```
 
-Useful options:
+CI-safe command:
 
-- `--api-base-url http://127.0.0.1:8000`
-- `--frontend-base-url http://127.0.0.1:5173`
-- `--output-dir backend/review_bundles`
-- `--skip-screenshots`
-- `--skip-commands`
+```bash
+cd backend
+python -m app.cli review-bundle --skip-screenshots --skip-commands --output-dir backend/review_bundles
+```
 
-The bundle redacts password/token/secret/DSN/wallet fields and raw SQL-like text. Screenshots use Playwright through `npx playwright screenshot`; install browser support with `npx playwright install chromium` if the local machine has not used Playwright before.
+The generated zip contains:
+
+- `app_metadata.json`
+- `test_results/`
+- `api_snapshots/`
+- `screenshots/`
+- `page_inventory.json`
+- `diagnostics_review.json`
+- `design_review_notes.md`
+- `README.md`
+- `manifest.json`
+
+The bundle redacts password/token/secret/DSN/wallet fields, internal registry URLs, and long raw SQL-like text.
 
 ## Connector-Driven vs Synthetic
 
 Connector-driven now:
 
-- Active DB session rows can be fetched from stock topology templates.
+- Active DB session/topology rows are collected by `TopologyIngestionService`.
 - Rows are executed through `QueryTemplateExecutionService`.
 - `QueryExecutionLog` stores audit/provenance.
-- `DbSessionSnapshot`, `RuntimeNode`, and `JobRunNodeBinding` are created from query results.
-- Missing ASH privileges are handled as degraded topology evidence, not startup failure.
+- `DbSessionSnapshot`, `RuntimeNode`, and `JobRunNodeBinding` are created from query-template results.
+- `RuntimeTopologyService` reads ingested snapshots first and only uses seed rows in mock/demo/local mode.
 
 Synthetic remains:
 
@@ -102,12 +132,12 @@ Synthetic remains:
 - Server metrics such as WLS GC and some DB node pressure samples.
 - Diagnostic and APJ evidence examples when no real connector data exists.
 
-## Known Gaps
+## Remaining Production Gaps
 
-- Docker Compose build was not locally verified because Docker is unavailable on this machine.
-- Playwright screenshots require a running frontend and browser support; the review command degrades by recording warnings if screenshots fail.
-- Large services still exist. This pass extracted heat scoring and dashboard runtime-map components, but deeper decomposition of evaluation and diagnostics should be done incrementally with broader regression coverage.
-- Real Oracle connector behavior is feature-flagged and tested through resolver/guardrail/mock paths. Live Oracle connectivity requires production read-only credentials and network access.
+- Docker Compose build still needs GitHub Actions confirmation because Docker is unavailable locally.
+- Real Oracle connectivity remains feature-flagged and requires production read-only credentials, network routing, and wallet/TNS configuration.
+- Playwright screenshots require a running frontend; CI uploads the bundle in no-browser mode.
+- Deeper decomposition of evaluation and diagnostic generators remains future hardening work, but the topology heat scorer and runtime-map UI split are in place.
 
 ## Safety Posture
 
@@ -115,4 +145,4 @@ Synthetic remains:
 - DBMS remediation, DML, DDL, PL/SQL, and multi-statement execution are blocked by tests.
 - Oracle credentials, DSNs, wallets, and tokens are not stored in Sentinel connector records.
 - Raw UDQ/customer SQL text remains disabled by default.
-- Errors are sanitized before query execution logs or API payloads expose them.
+- Errors and review-bundle output are sanitized before external sharing.
