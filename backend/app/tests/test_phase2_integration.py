@@ -56,6 +56,20 @@ def test_sql_guard_rejects_unsafe_sql(sql: str) -> None:
         validate_read_only_template(sql)
 
 
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "BEGIN DBMS_STATS.GATHER_TABLE_STATS(:owner, :table_name); END;",
+        "BEGIN DBMS_SPM.LOAD_PLANS_FROM_SQLSET(:name); END;",
+        "EXEC DBMS_SQLTUNE.ACCEPT_SQL_PROFILE(task_name => :task_name)",
+        "ALTER SYSTEM SET optimizer_use_sql_plan_baselines = true",
+    ],
+)
+def test_sql_guard_rejects_dbms_remediation_commands(sql: str) -> None:
+    with pytest.raises(QueryValidationError):
+        validate_read_only_template(sql)
+
+
 def test_sql_guard_comments_do_not_bypass_validation_and_strings_are_safe() -> None:
     assert validate_read_only_template("SELECT 'delete from x' AS label FROM dual WHERE id = :id").is_valid
     with pytest.raises(QueryValidationError):
@@ -95,6 +109,14 @@ def test_catalog_import_and_template_validation(db_session: Session) -> None:
     assert template is not None
     assert template.is_read_only_validated is True
     assert template.template_category == "sql_observation"
+
+
+def test_all_bundled_query_templates_are_select_or_with_only(db_session: Session) -> None:
+    QueryCatalogImporter(db_session).import_bundled()
+
+    for template in db_session.scalars(select(QueryTemplate).order_by(QueryTemplate.template_id)):
+        result = validate_read_only_template(template.sql_text)
+        assert result.normalized_sql.lower().startswith(("select", "with"))
 
 
 def test_customer_pod_onboarding_applies_stock_templates_and_initial_fetch(db_session: Session) -> None:
@@ -246,3 +268,48 @@ def test_execution_log_sanitizes_secret_parameters(db_session: Session) -> None:
     assert summary.log.parameters["password"] == "[redacted]"
     assert "super-secret" not in str(summary.log.sample_result)
     assert "super-secret" not in str(summary.log.validation_result)
+
+
+def test_mock_oracle_ora_errors_are_sanitized(db_session: Session) -> None:
+    template = QueryTemplate(
+        template_id="mock_ora_error",
+        name="Mock ORA error",
+        sql_text="SELECT * FROM mock_raise_ora_error WHERE id = :id",
+        required_parameters={"id": {"type": "number"}},
+        default_parameters={"id": 1},
+    )
+    db_session.add(template)
+    db_session.flush()
+
+    summary = QueryTemplateExecutionService(db_session).execute(
+        template,
+        customer_key="CUST_A",
+        environment_name="PROD",
+        parameters={"id": 1},
+        initiated_by="test",
+    )
+
+    assert summary.log.status == "failed"
+    assert "ORA-00942" in (summary.log.sanitized_error_message or "")
+    assert "mock-secret" not in (summary.log.sanitized_error_message or "")
+    assert "mock-host.example" not in (summary.log.sanitized_error_message or "")
+
+
+def test_raw_udq_sql_text_is_not_stored_by_default(db_session: Session) -> None:
+    QueryCatalogImporter(db_session).import_bundled()
+    sql_template = db_session.scalar(select(QueryTemplate).where(QueryTemplate.template_id == "icm_sql_observation_by_sql_id"))
+    assert sql_template is not None
+
+    summary = QueryTemplateIngestionService(db_session).ingest(
+        sql_template,
+        customer_key="CUST_A",
+        environment_name="PROD",
+        parameters=sql_template.default_parameters,
+        initiated_by="test",
+    )
+    db_session.commit()
+
+    assert summary.execution.log.raw_sql_storage_enabled is False
+    payload = str(summary.execution.log.sample_result).lower()
+    assert "select " not in payload
+    assert " from " not in payload

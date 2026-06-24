@@ -2,6 +2,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 import hashlib
 import json
+import os
+import re
 from time import perf_counter
 from typing import Any
 from uuid import uuid4
@@ -209,7 +211,12 @@ def _sanitize_parameters(parameters: dict[str, Any]) -> dict[str, Any]:
 
 
 def _sanitize_error(exc: Exception) -> str:
-    return str(exc).replace("\n", " ")[:500]
+    message = str(exc).replace("\n", " ")
+    for key, value in os.environ.items():
+        if value and any(token in key.lower() for token in ["password", "secret", "token", "wallet", "dsn"]):
+            message = message.replace(value, "[redacted]")
+    message = re.sub(r"(?i)(password|token|secret|wallet|dsn)\s*[:=]\s*[^,\s;]+", r"\1=[redacted]", message)
+    return message[:500]
 
 
 def _sample(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:

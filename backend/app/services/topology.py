@@ -16,6 +16,7 @@ from app.models import (
     JobRunNodeBinding,
     RuntimeNode,
     RuntimeNodeMetricSample,
+    QueryTemplate,
 )
 from app.models.base import utcnow
 from app.schemas import (
@@ -31,6 +32,8 @@ from app.schemas import (
     TopologyCorrelationRead,
 )
 from app.services.baseline import duration_minutes
+from app.services.query_execution import QueryTemplateExecutionService
+from app.services.topology_scoring import TopologyHeatScoreScorer
 
 
 TOPOLOGY_COLLECTOR_VERSION = "2C.1"
@@ -41,11 +44,20 @@ class RuntimeTopologyService:
 
     def __init__(self, db: Session):
         self.db = db
+        self.heat_scorer = TopologyHeatScoreScorer()
 
-    def correlate_run(self, run_id: int, *, lookback_minutes: int = 120, persist: bool = True) -> TopologyCorrelationRead:
+    def correlate_run(
+        self,
+        run_id: int,
+        *,
+        lookback_minutes: int = 120,
+        persist: bool = True,
+        connector_rows: list[dict[str, Any]] | None = None,
+    ) -> TopologyCorrelationRead:
         run = self._load_run(run_id)
         now = utcnow()
-        rows = self._session_rows_for_run(run, now)
+        rows = connector_rows if connector_rows is not None else (self._connector_session_rows_for_run(run) if persist else [])
+        rows = rows or self._session_rows_for_run(run, now)
         missing_inputs: list[str] = []
         if not rows:
             missing_inputs.append("No GV$SESSION-like row available. Try client_identifier, module/action, or SQL_ID fallback.")
@@ -66,6 +78,7 @@ class RuntimeTopologyService:
 
         for row in rows:
             row.setdefault("SYNTHETIC_TOPOLOGY_SEED", True)
+            row.setdefault("QUERY_EXECUTION_ID", row.get("QUERY_EXECUTION_ID"))
             session = self._upsert_session_snapshot(run, row) if persist else self._transient_session(run, row)
             active_sessions.append(session)
             if row.get("INST_ID") is not None:
@@ -527,58 +540,91 @@ class RuntimeTopologyService:
             setattr(node, key, value)
         return node
 
+    def ingest_topology_for_run(self, run_id: int) -> dict[str, Any]:
+        """Run active-session topology collection through the query-template executor.
+
+        This is the production path: rows come from the configured read-only
+        connector, get audited in QueryExecutionLog, then flow through the same
+        session/node/binding persistence used by correlation. Seed fallback is
+        intentionally outside this method so tests can prove connector-driven
+        ingestion separately.
+        """
+        run = self._load_run(run_id)
+        rows = self._connector_session_rows_for_run(run)
+        if not rows:
+            return {"run_id": run_id, "status": "no_rows", "snapshots": 0, "bindings": 0}
+        before_snapshots = len(self._sessions_for_scope(customer_key=run.customer.customer_key, environment=run.environment.name))
+        result = self.correlate_run(run_id, persist=True, connector_rows=rows)
+        after_snapshots = len(self._sessions_for_scope(customer_key=run.customer.customer_key, environment=run.environment.name))
+        return {
+            "run_id": run_id,
+            "status": "success",
+            "snapshots": max(after_snapshots - before_snapshots, len(result.active_sessions)),
+            "bindings": len(result.bindings),
+            "active_sql_id": result.active_sql_id,
+            "recommended_next_query": result.recommended_next_query,
+        }
+
     def compute_heat_score(
         self,
         sessions: list[DbSessionSnapshot],
         bindings: list[JobRunNodeBinding],
         metrics: list[RuntimeNodeMetricSample],
     ) -> tuple[float, dict[str, Any]]:
-        active_slow_jobs = len(
-            {
-                binding.run_id
-                for binding in bindings
-                if binding.run and binding.run.status == "RUNNING" and self._run_is_slowish(binding.run)
-            }
-        )
-        wait_samples = len([session for session in sessions if session.wait_class and session.wait_class.lower() not in {"cpu", "idle"}])
-        sql_concentration = max(
-            [len([session for session in sessions if session.sql_id == sql_id]) for sql_id in {session.sql_id for session in sessions if session.sql_id}] or [0]
-        )
-        metric_values = {metric.metric_name: float(metric.metric_value) for metric in metrics}
-        cpu = metric_values.get("cpu_utilization_pct", 0)
-        gc = metric_values.get("wls_full_gc_pct", 0)
-        cluster_waits = metric_values.get("db_cluster_wait_samples", 0)
-        io_waits = metric_values.get("db_io_wait_samples", 0)
-        app_waits = metric_values.get("db_application_wait_samples", 0)
-        active_sessions = metric_values.get("db_active_sessions", 0)
-        score = (
-            active_slow_jobs * 22
-            + wait_samples * 8
-            + sql_concentration * 5
-            + max(cpu - 60, 0) * 0.7
-            + gc * 1.6
-            + min(cluster_waits, 30) * 0.7
-            + min(io_waits, 45) * 1.0
-            + min(app_waits, 30) * 0.8
-            + min(active_sessions, 50) * 0.45
-        )
-        return round(min(score, 100), 1), {
-            "active_slow_jobs": active_slow_jobs,
-            "wait_samples": wait_samples,
-            "sql_concentration": sql_concentration,
-            "cpu_utilization_pct": cpu,
-            "wls_full_gc_pct": gc,
-            "db_cluster_wait_samples": cluster_waits,
-            "db_io_wait_samples": io_waits,
-            "db_application_wait_samples": app_waits,
-            "db_active_sessions": active_sessions,
-        }
+        slow_run_ids = {binding.run_id for binding in bindings if binding.run and self._run_is_slowish(binding.run)}
+        return self.heat_scorer.score(sessions, bindings, metrics, slow_run_ids=slow_run_ids)
 
     def _load_run(self, run_id: int) -> JobRun:
         run = self.db.get(JobRun, run_id)
         if not run:
             raise ValueError(f"Run {run_id} was not found")
         return run
+
+    def _connector_session_rows_for_run(self, run: JobRun) -> list[dict[str, Any]]:
+        template = self._topology_template_for_run(run)
+        if template is None:
+            return []
+        parameters = {
+            "ecid": (run.business_scope or {}).get("ecid"),
+            "client_identifier": (run.business_scope or {}).get("client_identifier"),
+            "sql_id": run.sql_id,
+            "module_like": f"%{run.api_operation or run.job_type}%" if run.api_operation or run.job_type else None,
+            "action_like": f"%{run.api_operation or run.job_name}%" if run.api_operation or run.job_name else None,
+            "ess_request_token": f"%{run.ess_request_id}%" if run.ess_request_id else None,
+            "process_id": run.process_id,
+            "program_like": "%ESS%",
+        }
+        summary = QueryTemplateExecutionService(self.db).execute(
+            template,
+            customer_key=run.customer.customer_key,
+            environment_name=run.environment.name,
+            parameters=parameters,
+            initiated_by="topology_correlation",
+            executed_by="topology_service",
+        )
+        if summary.log.status != "success":
+            return []
+        rows: list[dict[str, Any]] = []
+        for row in summary.rows:
+            normalized = {str(key).upper(): value for key, value in row.items()}
+            normalized["QUERY_EXECUTION_ID"] = summary.log.id
+            normalized["SYNTHETIC_TOPOLOGY_SEED"] = False
+            normalized.setdefault("SAMPLED_AT", utcnow())
+            normalized.setdefault("ASH_AVAILABLE", True)
+            rows.append(normalized)
+        return rows
+
+    def _topology_template_for_run(self, run: JobRun) -> QueryTemplate | None:
+        if (run.business_scope or {}).get("ecid") or (run.business_scope or {}).get("client_identifier") or run.sql_id:
+            template_id = "active_db_session_by_ecid_or_client_identifier"
+        else:
+            template_id = "active_db_session_by_ess_request"
+        template = self.db.scalar(select(QueryTemplate).where(QueryTemplate.template_id == template_id, QueryTemplate.active.is_(True)))
+        if template is None and template_id != "active_db_session_by_ess_request":
+            template = self.db.scalar(
+                select(QueryTemplate).where(QueryTemplate.template_id == "active_db_session_by_ess_request", QueryTemplate.active.is_(True))
+            )
+        return template
 
     def _session_rows_for_run(self, run: JobRun, now: datetime) -> list[dict[str, Any]]:
         key = run.run_key
@@ -975,6 +1021,7 @@ class RuntimeTopologyService:
         binding.last_seen_at = now
         binding.evidence_summary = evidence_summary
         binding.evidence_json = self._sanitize_evidence(evidence)
+        binding.query_execution_id = evidence.get("QUERY_EXECUTION_ID")
         self.db.flush()
         return binding
 

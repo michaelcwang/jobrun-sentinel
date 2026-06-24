@@ -5,10 +5,10 @@ import { api } from "../api/client";
 import { useAsync } from "../api/useAsync";
 import { HelpTip } from "../components/HelpTip";
 import { LoadingState } from "../components/LoadingState";
+import { RuntimeTopologyMapView, ServerTimeHeatmapView } from "../components/topology/DashboardRuntimeMaps";
 import { customerPodParam, useRole } from "../context/RoleContext";
 import type { ServerHeatmapCell } from "../types";
 import { shortDate } from "../utils/format";
-import { RuntimeTopologyMap, ServerTimeHeatmap } from "./DashboardPage";
 
 const LIVE_REFRESH_MS = 15000;
 
@@ -77,7 +77,7 @@ export function TopologyPage() {
             </button>
           </div>
         </div>
-        <ServerTimeHeatmap
+        <ServerTimeHeatmapView
           heatmap={heatmap}
           selectedCell={selectedCell}
           showHotOnly={showHotOnly}
@@ -87,7 +87,7 @@ export function TopologyPage() {
       </div>
       <div className="panel">
         <h3>Execution topology</h3>
-        <RuntimeTopologyMap topology={topology} selectedRunId={selectedTopologyRunId} />
+        <RuntimeTopologyMapView topology={topology} selectedRunId={selectedTopologyRunId} />
       </div>
     </section>
   );

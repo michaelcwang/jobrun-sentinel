@@ -122,6 +122,28 @@ def test_active_db_session_query_template_executes_through_mock(db_session: Sess
     assert "password" not in json.dumps(summary.log.sample_result).lower()
 
 
+def test_connector_driven_topology_ingestion_persists_provenance(db_session: Session) -> None:
+    QueryCatalogImporter(db_session).import_bundled()
+    run = _apj_run(db_session)
+    result = RuntimeTopologyService(db_session).ingest_topology_for_run(run.id)
+    db_session.commit()
+
+    snapshot = db_session.scalar(select(DbSessionSnapshot).where(DbSessionSnapshot.run_id == run.id).order_by(DbSessionSnapshot.id.desc()))
+    binding = db_session.scalar(
+        select(JobRunNodeBinding)
+        .where(JobRunNodeBinding.run_id == run.id, JobRunNodeBinding.binding_type == "db_instance_confirmed")
+        .order_by(JobRunNodeBinding.id.desc())
+    )
+
+    assert result["status"] == "success"
+    assert result["active_sql_id"] == "dp9u1803k8k7f"
+    assert snapshot is not None
+    assert snapshot.query_execution_id is not None
+    assert snapshot.sql_id == "dp9u1803k8k7f"
+    assert binding is not None
+    assert binding.query_execution_id == snapshot.query_execution_id
+
+
 def test_heat_score_computation_uses_waits_metrics_and_slow_jobs(db_session: Session) -> None:
     run = _apj_run(db_session)
     service = RuntimeTopologyService(db_session)
@@ -188,6 +210,18 @@ def test_heatmap_handles_ash_unavailable_and_redacts_ips(db_session: Session) ->
     assert heatmap.rows
     assert "ip_address" not in json.dumps(payload).lower()
     assert "10.0.0." not in json.dumps(payload)
+
+
+def test_connector_topology_handles_missing_ash_privileges(db_session: Session) -> None:
+    QueryCatalogImporter(db_session).import_bundled()
+    run = db_session.scalar(select(JobRun).where(JobRun.run_key == "CUST_A-PROD-AMER-LATAM-COLLECT-CURRENT"))
+    assert run is not None
+
+    result = RuntimeTopologyService(db_session).correlate_run(run.id)
+
+    assert result.active_sessions
+    assert result.active_sessions[0].wait_class == "Scheduler"
+    assert any("GV$ACTIVE_SESSION_HISTORY unavailable" in item for item in result.missing_inputs)
 
 
 def test_alert_payload_includes_topology_summary(db_session: Session) -> None:

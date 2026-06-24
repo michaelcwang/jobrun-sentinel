@@ -11,6 +11,7 @@ from app.models import Base, ConnectorConfig, QueryTemplate
 from app.live_traffic import run_live_traffic
 from app.services.query_catalog import QueryCatalogImporter
 from app.services.query_execution import QueryTemplateExecutionService
+from app.services.review_bundle import create_review_bundle, options_from_args
 from app.services.scheduler import run_sync_once
 
 
@@ -32,6 +33,12 @@ def main() -> None:
     live.add_argument("--no-diagnostics", action="store_true")
     live.add_argument("--reset-live", action="store_true")
     live.add_argument("--base-url", default="http://127.0.0.1:8000")
+    review = subcommands.add_parser("review-bundle", help="Capture redacted API snapshots, screenshots, and build/test outputs")
+    review.add_argument("--api-base-url", default="http://127.0.0.1:8000")
+    review.add_argument("--frontend-base-url", default="http://127.0.0.1:5173")
+    review.add_argument("--output-dir", default="backend/review_bundles")
+    review.add_argument("--skip-screenshots", action="store_true")
+    review.add_argument("--skip-commands", action="store_true")
     args = parser.parse_args()
 
     Base.metadata.create_all(bind=engine)
@@ -63,6 +70,8 @@ def main() -> None:
                 )
             )
             db.commit()
+        elif args.command == "review-bundle":
+            _print(create_review_bundle(options_from_args(args)))
     finally:
         db.close()
 

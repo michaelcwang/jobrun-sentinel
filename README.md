@@ -245,6 +245,19 @@ Slack integration:
 
 The registry only accepts parameterized `SELECT`/`WITH` SQL and blocks write/DDL keywords, PL/SQL, procedure calls, `DBMS_*`, multiple statements, and interpolation patterns. Executions store audit metadata and a small sanitized sample result, not large result sets.
 
+## CI And Review Bundle
+
+GitHub Actions runs backend install/tests, frontend `npm ci`/build/tests, and Docker Compose build on push and pull request.
+
+Create an external review bundle from a running local app:
+
+```bash
+cd backend
+.venv/bin/python -m app.cli review-bundle
+```
+
+The command captures redacted API snapshots, test/build output, optional Playwright screenshots, and a zip under `backend/review_bundles`. See `HARDENING_SUMMARY.md` for verification details and known gaps.
+
 Import the bundled synthetic ICM catalog:
 
 ```bash

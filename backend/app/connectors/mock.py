@@ -41,6 +41,10 @@ class MockOracleDbConnector(OracleDbConnector):
         if validate_only:
             return []
         sql_lower = sql_text.lower()
+        if "mock_raise_ora_error" in sql_lower or parameters.get("simulate_ora_error"):
+            raise RuntimeError(
+                "ORA-00942: table or view does not exist; password=mock-secret dsn=mock-host.example/service"
+            )
         if "mock_icm_job_history" in sql_lower or "run_history" in sql_lower:
             return [
                 {
@@ -142,6 +146,7 @@ class MockOracleDbConnector(OracleDbConnector):
                         "BLOCKING_INSTANCE": None,
                         "BLOCKING_SESSION": None,
                         "PLAN_HASH_VALUE": "77192011",
+                        "ASH_AVAILABLE": False,
                     }
                 ][:row_limit]
             return [
