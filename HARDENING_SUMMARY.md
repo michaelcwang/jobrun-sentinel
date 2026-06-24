@@ -14,6 +14,16 @@ Latest inspected GitHub Actions run before this patch:
 - Docker Compose build: failed
 - Log download was blocked by GitHub API permissions, but job metadata was available.
 
+GitHub Actions result after this patch:
+
+- Run: `28105988795`
+- Commit: `ce7a037`
+- Result: green on the GitHub run page
+- Backend pytest: completed successfully
+- Frontend build and tests: completed successfully
+- Docker Compose build: completed successfully
+- Note: the unauthenticated badge endpoint still returned a stale `failing` SVG immediately after the successful run, but the run page showed all three jobs with success checks.
+
 Fixes in this patch:
 
 - Normalized `frontend/package-lock.json` away from an internal Oracle npm registry so GitHub-hosted runners can run `npm ci`.
